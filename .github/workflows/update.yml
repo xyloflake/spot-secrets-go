@@ -1,0 +1,42 @@
+name: Scrape spotify secrets
+
+on:
+  workflow_dispatch:
+  
+  schedule:
+    - cron: '0 * * * *' # every hour
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install dependencies
+        run: go mod tidy
+
+      - name: Run the secret scraper
+        run: go run .
+
+      - name: Commit and push if changed
+        run: |
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          if [ -n "$(git status --porcelain secrets/)" ]; then
+            git add secrets/
+            git commit -m "Update spotify secrets"
+            git push
+          else
+            echo "No changes to commit"
+          fi
