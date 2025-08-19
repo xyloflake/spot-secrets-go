@@ -3,9 +3,9 @@ name: Scrape spotify secrets
 on:
   push:
   workflow_dispatch:
-  
+
   schedule:
-    - cron: '0 * * * *' # every hour
+    - cron: "0 * * * *" # every hour
 
 permissions:
   contents: write
@@ -18,10 +18,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cache Chrome
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/browser-actions
+          key: ${{ runner.os }}-chrome-stable
+          restore-keys: |
+            ${{ runner.os }}-chrome-
+
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+        id: setup-chrome
+        with:
+          chrome-version: stable
+          cache: true
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: "1.25"
 
       - name: Install dependencies
         run: go mod tidy
@@ -33,7 +48,7 @@ jobs:
         run: |
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          
+
           if [ -n "$(git status --porcelain secrets/)" ]; then
             git add secrets/
             git commit -m "Update spotify secrets"
