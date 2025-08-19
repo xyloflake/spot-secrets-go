@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"time"
+	"encoding/hex"
+	"strings"
 
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/cdproto/page"
@@ -29,7 +31,43 @@ type SecretBytes struct {
 	Secret  []int `json:"secret"`
 }
 
+type SecretBase32 struct {
+	Version int    `json:"version"`
+	Secret  string `json:"secret"`
+}
+
 type SecretDict map[string][]int
+
+func base32FromBytes(bytes []uint8, secretSauce string) string {
+	t, n := 0, 0;
+	r := "";
+	
+	for _, b := range bytes {
+		n = (n << 8) | int(b);
+		t += 8;
+		for t >= 5 {
+			r += string(secretSauce[(n >> (t - 5)) & 31])
+			t -= 5
+		}
+	}
+	
+	if (t > 0) {
+		r += string(secretSauce[(n << (5 - t)) & 31])
+	}
+	
+	return r
+}
+
+func cleanBuffer(e string) ([]byte, error) {
+	// remove spaces
+	e = strings.ReplaceAll(e, " ", "")
+	// decode hex string into bytes
+	buffer, err := hex.DecodeString(e)
+	if err != nil {
+		return nil, err
+	}
+	return buffer, nil
+}
 
 func summarise(caps []map[string]interface{}) {
 	real := map[string]string{}
@@ -93,13 +131,46 @@ func summarise(caps []map[string]interface{}) {
 		secretDict[strconv.Itoa(s.Version)] = chars
 	}
 
+	// Base 32 encoding
+	var secretBase32 []SecretBase32
+	secretSauce := "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+	
+	secretCipherBytes := make([]int, len(secretBytes[len(secretBytes)-1].Secret))
+	for i, e := range secretBytes[len(secretBytes)-1].Secret {
+		secretCipherBytes[i] = e ^ ((i % 33) + 9)
+	}
+	
+	joined := ""
+	for _, v := range secretCipherBytes {
+		joined += fmt.Sprintf("%d", v)
+	}
+	
+	utf8Bytes := []byte(joined)
+	
+	hexStr := ""
+	for _, b := range utf8Bytes {
+		hexStr += fmt.Sprintf("%02x", b)
+	}
+	
+	secretBytesClean, err := cleanBuffer(hexStr)
+	if err != nil {
+		panic(err)
+	}
+	
+	secretBase32 = append(secretBase32, SecretBase32{
+		Version: secretBytes[len(secretBytes)-1].Version,
+		Secret:  base32FromBytes(secretBytesClean, secretSauce),
+	})
+	
 	writeJSONPretty("secrets/secrets.json", formattedData)
 	writeJSON("secrets/secretBytes.json", secretBytes)
 	writeJSON("secrets/secretDict.json", secretDict)
+	writeJSON("secrets/secretBase32.json", secretBase32)
 
 	fmt.Println(formattedData)
 	fmt.Println(secretBytes)
 	fmt.Println(secretDict)
+	fmt.Println(secretBase32)
 }
 
 func writeJSONPretty(filename string, v interface{}) {
