@@ -165,7 +165,7 @@ func summarise(caps []map[string]interface{}) {
 	writeJSONPretty("secrets/secrets.json", formattedData)
 	writeJSON("secrets/secretBytes.json", secretBytes)
 	writeJSON("secrets/secretDict.json", secretDict)
-	writeJSON("secrets/secretBase32.json", secretBase32)
+	writeJSON("secrets/secretBase32.json", secretBase32[0])
 
 	fmt.Println(formattedData)
 	fmt.Println(secretBytes)
