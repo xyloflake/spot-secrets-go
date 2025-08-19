@@ -93,7 +93,7 @@ func summarise(caps []map[string]interface{}) {
 		secretDict[strconv.Itoa(s.Version)] = chars
 	}
 
-	writeJSON("secrets/secrets.json", formattedData)
+	writeJSONPretty("secrets/secrets.json", formattedData)
 	writeJSON("secrets/secretBytes.json", secretBytes)
 	writeJSON("secrets/secretDict.json", secretDict)
 
@@ -102,9 +102,15 @@ func summarise(caps []map[string]interface{}) {
 	fmt.Println(secretDict)
 }
 
-func writeJSON(filename string, v interface{}) {
+func writeJSONPretty(filename string, v interface{}) {
 	os.MkdirAll("secrets", 0755)
 	data, _ := json.MarshalIndent(v, "", "  ")
+	_ = os.WriteFile(filename, data, 0644)
+}
+
+func writeJSON(filename string, v interface{}) {
+	os.MkdirAll("secrets", 0755)
+	data, _ := json.Marshal(v) // compact
 	_ = os.WriteFile(filename, data, 0644)
 }
 
