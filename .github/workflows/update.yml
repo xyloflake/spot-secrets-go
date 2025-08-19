@@ -1,6 +1,7 @@
 name: Scrape spotify secrets
 
 on:
+  push:
   workflow_dispatch:
   
   schedule:
