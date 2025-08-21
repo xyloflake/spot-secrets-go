@@ -19,7 +19,8 @@ import (
 
 var bundleRe = regexp.MustCompile(`(?:vendor~web-player|encore~web-player|web-player)\.[0-9a-f]{4,}\.(?:js|mjs)`)
 
-const timeout = 45 * time.Second
+// 10 minutes for timeout
+const timeout = 600 * time.Second
 
 type Secret struct {
 	Version int    `json:"version"`
