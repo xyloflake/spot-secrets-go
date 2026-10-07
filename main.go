@@ -2,19 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
 	"strconv"
-	"time"
-	"encoding/hex"
 	"strings"
-
-	"github.com/chromedp/chromedp"
-	"github.com/chromedp/cdproto/page"
+	"time"
 )
 
 var bundleRe = regexp.MustCompile(`(?:vendor~web-player|encore~web-player|web-player)\.[0-9a-f]{4,}\.(?:js|mjs)`)
@@ -40,22 +39,22 @@ type SecretBase32 struct {
 type SecretDict map[string][]int
 
 func base32FromBytes(bytes []uint8, secretSauce string) string {
-	t, n := 0, 0;
-	r := "";
-	
+	t, n := 0, 0
+	r := ""
+
 	for _, b := range bytes {
-		n = (n << 8) | int(b);
-		t += 8;
+		n = (n << 8) | int(b)
+		t += 8
 		for t >= 5 {
-			r += string(secretSauce[(n >> (t - 5)) & 31])
+			r += string(secretSauce[(n>>(t-5))&31])
 			t -= 5
 		}
 	}
-	
-	if (t > 0) {
-		r += string(secretSauce[(n << (5 - t)) & 31])
+
+	if t > 0 {
+		r += string(secretSauce[(n<<(5-t))&31])
 	}
-	
+
 	return r
 }
 
@@ -135,34 +134,34 @@ func summarise(caps []map[string]interface{}) {
 	// Base 32 encoding
 	var secretBase32 []SecretBase32
 	secretSauce := "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-	
+
 	secretCipherBytes := make([]int, len(secretBytes[len(secretBytes)-1].Secret))
 	for i, e := range secretBytes[len(secretBytes)-1].Secret {
 		secretCipherBytes[i] = e ^ ((i % 33) + 9)
 	}
-	
+
 	joined := ""
 	for _, v := range secretCipherBytes {
 		joined += fmt.Sprintf("%d", v)
 	}
-	
+
 	utf8Bytes := []byte(joined)
-	
+
 	hexStr := ""
 	for _, b := range utf8Bytes {
 		hexStr += fmt.Sprintf("%02x", b)
 	}
-	
+
 	secretBytesClean, err := cleanBuffer(hexStr)
 	if err != nil {
 		panic(err)
 	}
-	
+
 	secretBase32 = append(secretBase32, SecretBase32{
 		Version: secretBytes[len(secretBytes)-1].Version,
 		Secret:  base32FromBytes(secretBytesClean, secretSauce),
 	})
-	
+
 	writeJSONPretty("secrets/secrets.json", formattedData)
 	writeJSON("secrets/secretBytes.json", secretBytes)
 	writeJSON("secrets/secretDict.json", secretDict)
@@ -186,101 +185,83 @@ func writeJSON(filename string, v interface{}) {
 	_ = os.WriteFile(filename, data, 0644)
 }
 
-// well guess what, go doesn't have puppeteer stealth
-// this just imitates it
-const stealth = `(function () {
-	// navigator.webdriver
-	Object.defineProperty(navigator, 'webdriver', { get: () => false });
+// Spotify now declares secrets as object literals ([{secret:'...',version:61}].map(...)),
+// which bypass setters on Object.prototype, so the old chromedp hook captured nothing.
+// Reading the bundles directly is enough and needs no browser.
+var (
+	scriptRe   = regexp.MustCompile(`https://open\.spotifycdn\.com/cdn/build/web-player/[^"']+\.js`)
+	secretRe   = regexp.MustCompile(`\{secret:(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"),version:(\d+)\}`)
+	unescapeRe = regexp.MustCompile(`\\(.)`)
+)
 
-	// languages
-	Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+const userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 
-	// plugins
-	Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+func fetch(ctx context.Context, url string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GET %s: %s", url, resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	return string(body), err
+}
 
-	// chrome runtime object
-	window.chrome = { runtime: {} };
-
-	// permissions
-	const originalQuery = window.navigator.permissions.query;
-	window.navigator.permissions.query = (parameters) => (
-		parameters.name === 'notifications' ?
-			Promise.resolve({ state: Notification.permission }) :
-			originalQuery(parameters)
-	);
-
-	// WebGL vendor/renderer
-	const getParameter = WebGLRenderingContext.prototype.getParameter;
-	WebGLRenderingContext.prototype.getParameter = function (param) {
-		if (param === 37445) return 'Intel Inc.';
-		if (param === 37446) return 'Intel Iris OpenGL Engine';
-		return getParameter.call(this, param);
-	};
-})();`
+func extractSecrets(js string) []map[string]interface{} {
+	var caps []map[string]interface{}
+	for _, m := range secretRe.FindAllStringSubmatch(js, -1) {
+		ver, err := strconv.Atoi(m[3])
+		if err != nil {
+			continue
+		}
+		raw := m[1]
+		if raw == "" {
+			raw = m[2]
+		}
+		caps = append(caps, map[string]interface{}{
+			"secret":  unescapeRe.ReplaceAllString(raw, "$1"),
+			"version": float64(ver),
+		})
+	}
+	return caps
+}
 
 func grabLive(ctx context.Context) ([]map[string]interface{}, error) {
-	hook := `(()=>{if(globalThis.__secretHookInstalled)return;
-	globalThis.__secretHookInstalled=true;
-	globalThis.__captures=[];
-	Object.defineProperty(Object.prototype,'secret',{configurable:true,set:function(v){
-		try{__captures.push({secret:v,version:this.version,obj:this});}catch(e){}
-		Object.defineProperty(this,'secret',{value:v,writable:true,configurable:true,enumerable:true});}});
-	})();`
-
-	var caps []map[string]interface{}
-
-	if err := chromedp.Run(ctx,
-		// Apply stealth first
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			_, err := page.AddScriptToEvaluateOnNewDocument(stealth).Do(ctx)
-			return err
-		}),
-		// Install hook
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			_, err := page.AddScriptToEvaluateOnNewDocument(hook).Do(ctx)
-			return err
-		}),
-	); err != nil {
+	fmt.Println("Opening Spotify...")
+	html, err := fetch(ctx, "https://open.spotify.com")
+	if err != nil {
 		return nil, err
 	}
 
-	fmt.Println("Opening Spotify...")
-	if err := chromedp.Run(ctx,
-		chromedp.Navigate("https://open.spotify.com"),
-		chromedp.Sleep(3*time.Second),
-		chromedp.EvaluateAsDevTools(`globalThis.__captures || []`, &caps),
-	); err != nil {
-		return nil, err
+	var caps []map[string]interface{}
+	seen := map[string]bool{}
+	for _, url := range scriptRe.FindAllString(html, -1) {
+		if seen[url] || !bundleRe.MatchString(url) {
+			continue
+		}
+		seen[url] = true
+		js, err := fetch(ctx, url)
+		if err != nil {
+			return nil, err
+		}
+		caps = append(caps, extractSecrets(js)...)
 	}
 
 	for _, c := range caps {
-		if s, ok := c["secret"].(string); ok {
-			if v, ok := c["version"].(float64); ok {
-				fmt.Printf("Secret(%d): %s\n", int(v), s)
-			}
-		}
+		fmt.Printf("Secret(%d): %s\n", int(c["version"].(float64)), c["secret"])
 	}
-
 	return caps, nil
 }
 
-
 func main() {
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		// Headless mode but still needs to look real
-		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-setuid-sandbox", true),
-	)
-
-	ctx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	defer cancel()
-
-	ctx, cancel = chromedp.NewContext(ctx)
-	defer cancel()
-
-	ctx, cancel = context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	caps, err := grabLive(ctx)
